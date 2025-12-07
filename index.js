@@ -22,6 +22,7 @@ async function run() {
 
         const db = client.db('local_chef_bazaar_db');
         const usersCollection = db.collection('users');
+        const roleRequestsCollection = db.collection('roleRequests');
 
         app.get('/users', async (req, res) => {
             try {
@@ -32,6 +33,37 @@ async function run() {
                 res.status(500).send({ error: 'Failed to fetch users' });
             }
         });
+        app.get('/users/:email', async (req, res) => {
+            const email = req.params.email;
+            try {
+                const result = await usersCollection.findOne({ email });
+                res.send(result);
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ error: 'Failed to fetch users' });
+            }
+        });
+
+        app.get('/users/:email/role', async (req, res) => {
+            const email = req.params.email;
+
+            try {
+                const user = await usersCollection.findOne(
+                    { email },
+                    { projection: { role: 1, _id: 0 } } // return ONLY role
+                );
+
+                if (!user) {
+                    // console.error("Error fetching user role:", error);
+                    return res.status(404).send({ role: "user" }); // default if not found
+                }
+
+                res.send({ role: user.role || 'user' });
+            } catch (error) {
+                res.status(500).send({ role: "user" });
+            }
+        });
+
 
 
         app.post('/users', async (req, res) => {
@@ -64,6 +96,7 @@ async function run() {
                 res.status(500).send({ error: 'Failed to update user' });
             }
         });
+
 
 
 
