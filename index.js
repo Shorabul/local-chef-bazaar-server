@@ -98,6 +98,20 @@ async function run() {
         });
 
 
+        app.post('/role-requests', async (req, res) => {
+            const { userName, userEmail, requestType } = req.body;
+
+            const newRequest = {
+                userName,
+                userEmail,
+                requestType,
+                requestStatus: 'pending',
+                requestTime: new Date()
+            };
+
+            const result = await roleRequestsCollection.insertOne(newRequest);
+            res.send({ success: true, data: result });
+        });
 
 
         // Send a ping to confirm a successful connection
