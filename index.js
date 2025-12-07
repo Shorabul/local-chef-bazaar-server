@@ -101,17 +101,46 @@ async function run() {
         app.post('/role-requests', async (req, res) => {
             const { userName, userEmail, requestType } = req.body;
 
-            const newRequest = {
-                userName,
-                userEmail,
-                requestType,
-                requestStatus: 'pending',
-                requestTime: new Date()
-            };
+            try {
+                // Check if a pending request already exists
+                const exists = await roleRequestsCollection.findOne({
+                    userEmail,
+                    requestType,
+                    requestStatus: "pending"
+                });
 
-            const result = await roleRequestsCollection.insertOne(newRequest);
-            res.send({ success: true, data: result });
+                if (exists) {
+                    return res.status(400).send({
+                        success: false,
+                        message: "You already have a pending request for this role."
+                    });
+                }
+
+                // Insert new role request
+                const newRequest = {
+                    userName,
+                    userEmail,
+                    requestType,
+                    requestStatus: 'pending',
+                    requestTime: new Date()
+                };
+
+                const result = await roleRequestsCollection.insertOne(newRequest);
+
+                // Update user collection to track the pending request
+                await usersCollection.updateOne(
+                    { email: userEmail },
+                    { $set: { [`roleRequest.${requestType}`]: "pending" } }
+                );
+
+                res.send({ success: true, data: result });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Server error" });
+            }
         });
+
+
 
 
         // Send a ping to confirm a successful connection
