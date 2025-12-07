@@ -64,8 +64,6 @@ async function run() {
             }
         });
 
-
-
         app.post('/users', async (req, res) => {
             const user = req.body;
             user.role = 'user';
@@ -97,6 +95,11 @@ async function run() {
             }
         });
 
+
+        app.get('/role-requests', async (req, res) => {
+            const requests = await roleRequestsCollection.find({}).toArray();
+            res.send(requests);
+        });
 
         app.post('/role-requests', async (req, res) => {
             const { userName, userEmail, requestType } = req.body;
