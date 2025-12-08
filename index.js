@@ -23,6 +23,7 @@ async function run() {
         const db = client.db('local_chef_bazaar_db');
         const usersCollection = db.collection('users');
         const roleRequestsCollection = db.collection('roleRequests');
+        const mealsCollection = db.collection('meals');
 
         app.get('/users', async (req, res) => {
             try {
@@ -55,7 +56,7 @@ async function run() {
 
                 if (!user) {
                     // console.error("Error fetching user role:", error);
-                    return res.status(404).send({ role: "user" }); // default if not found
+                    return res.status(404).send({ role: "user" });
                 }
 
                 res.send({ role: user.role || 'user' });
@@ -136,6 +137,17 @@ async function run() {
                     { $set: { [`roleRequest.${requestType}`]: "pending" } }
                 );
 
+                res.send({ success: true, data: result });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Server error" });
+            }
+        });
+
+        app.post('/meals', async (req, res) => {
+            const mealInfo = req.body;
+            try {
+                const result = await mealsCollection.insertOne(mealInfo);
                 res.send({ success: true, data: result });
             } catch (error) {
                 console.error(error);
