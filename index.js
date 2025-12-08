@@ -144,10 +144,94 @@ async function run() {
             }
         });
 
+        // Get meals by chef email
+        app.get('/meals/chef/:email', async (req, res) => {
+            const chefEmail = req.params.email;
+
+            try {
+                const result = await mealsCollection.find({ chefEmail }).toArray();
+                res.send({ success: true, data: result });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Server error" });
+            }
+        });
+
+        // Get single meal by ID
+        app.get("/meals/id/:id", async (req, res) => {
+            const id = req.params.id;
+
+            try {
+                const result = await mealsCollection.findOne({ _id: new ObjectId(id) });
+
+                res.send({
+                    success: true,
+                    data: result
+                });
+
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({
+                    success: false,
+                    message: "Failed to fetch meal"
+                });
+            }
+        });
+
+
+
         app.post('/meals', async (req, res) => {
             const mealInfo = req.body;
             try {
                 const result = await mealsCollection.insertOne(mealInfo);
+                res.send({ success: true, data: result });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Server error" });
+            }
+        });
+
+        // app.patch('/meals/:id', async (req, res) => {
+        //     const id = req.params.id;
+        //     const updateDoc = req.body;
+        //     try {
+        //         const result = await mealsCollection.deleteOne({ _id: new ObjectId(id) });
+        //         res.send({ success: true, data: result });
+        //     } catch (error) {
+        //         console.error(error);
+        //         res.status(500).send({ success: false, message: "Server error" });
+        //     }
+        // });
+
+        app.patch("/meals/:id", async (req, res) => {
+            const id = req.params.id;
+            const updatedFields = req.body;
+
+            try {
+                const result = await mealsCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: updatedFields }
+                );
+
+                res.send({
+                    success: true,
+                    modifiedCount: result.modifiedCount,
+                    message: "Meal updated successfully",
+                });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({
+                    success: false,
+                    message: "Failed to update meal",
+                });
+            }
+        });
+
+
+        app.delete('/meals/:id', async (req, res) => {
+            const id = req.params.id;
+            try {
+                const result = await mealsCollection.deleteOne({ _id: new ObjectId(id) });
                 res.send({ success: true, data: result });
             } catch (error) {
                 console.error(error);
