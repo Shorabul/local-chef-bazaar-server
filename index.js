@@ -24,6 +24,7 @@ async function run() {
         const usersCollection = db.collection('users');
         const roleRequestsCollection = db.collection('roleRequests');
         const mealsCollection = db.collection('meals');
+        const ordersCollection = db.collection('orders');
 
         app.get('/users', async (req, res) => {
             try {
@@ -195,6 +196,47 @@ async function run() {
             }
         });
 
+        app.get("/meals", async (req, res) => {
+            const page = parseInt(req.query.page) || 1;
+            const limit = parseInt(req.query.limit) || 10;
+            const skip = (page - 1) * limit;
+
+            const sortBy = req.query.sortBy || "_id";
+            const order = req.query.order === "desc" ? -1 : 1;
+
+            // FIXED projection
+            let fields = {};
+            if (req.query.fields) {
+                req.query.fields.split(",").forEach(f => {
+                    fields[f] = 1;
+                });
+            }
+
+            const filter = {};
+            if (req.query.featured === "true") {
+                filter.featured = true;
+            }
+
+            const meals = await mealsCollection
+                .find(filter)
+                .project(fields)
+                .sort({ [sortBy]: order })
+                .skip(skip)
+                .limit(limit)
+                .toArray();
+
+            const total = await mealsCollection.countDocuments(filter);
+
+            res.send({
+                total,
+                page,
+                limit,
+                pages: Math.ceil(total / limit),
+                data: meals
+            });
+        });
+
+
 
         // Get meals by chef email
         app.get('/meals/chef/:email', async (req, res) => {
@@ -243,18 +285,6 @@ async function run() {
             }
         });
 
-        // app.patch('/meals/:id', async (req, res) => {
-        //     const id = req.params.id;
-        //     const updateDoc = req.body;
-        //     try {
-        //         const result = await mealsCollection.deleteOne({ _id: new ObjectId(id) });
-        //         res.send({ success: true, data: result });
-        //     } catch (error) {
-        //         console.error(error);
-        //         res.status(500).send({ success: false, message: "Server error" });
-        //     }
-        // });
-
         app.patch("/meals/:id", async (req, res) => {
             const id = req.params.id;
             const updatedFields = req.body;
@@ -287,6 +317,16 @@ async function run() {
                 res.send({ success: true, data: result });
             } catch (error) {
                 console.error(error);
+                res.status(500).send({ success: false, message: "Server error" });
+            }
+        });
+
+        app.post('/order', async (req, res) => {
+            const orderInfo = req.body;
+            try {
+                const result = await ordersCollection.insertOne(orderInfo);
+                res.send(result);
+            } catch (error) {
                 res.status(500).send({ success: false, message: "Server error" });
             }
         });
