@@ -144,6 +144,58 @@ async function run() {
             }
         });
 
+        app.patch('/role-requests/:email', async (req, res) => {
+            const email = req.params.email;
+            const { requestType, action } = req.body; // action = approved / rejected
+
+            try {
+                // Reject request
+                if (action === "rejected") {
+                    await roleRequestsCollection.updateOne(
+                        { userEmail: email },
+                        { $set: { requestStatus: "rejected" } }
+                    );
+
+                    return res.send({ success: true, message: "Request rejected" });
+                }
+
+                // Approve request
+                if (action === "approved") {
+                    let updateFields = { role: requestType };
+
+                    // If request is chef → generate chefId
+                    if (requestType === "chef") {
+                        const chefId = "chef-" + (Math.floor(1000 + Math.random() * 9000));
+                        updateFields.chefId = chefId;
+                    }
+
+                    // If request is admin → set role as admin
+                    if (requestType === "admin") {
+                        updateFields.role = "admin";
+                    }
+
+                    // Update user role
+                    await usersCollection.updateOne(
+                        { email },
+                        { $set: updateFields }
+                    );
+
+                    // Update request status
+                    await roleRequestsCollection.updateOne(
+                        { userEmail: email },
+                        { $set: { requestStatus: "approved" } }
+                    );
+
+                    return res.send({ success: true, message: "Request approved" });
+                }
+
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Server error" });
+            }
+        });
+
+
         // Get meals by chef email
         app.get('/meals/chef/:email', async (req, res) => {
             const chefEmail = req.params.email;
