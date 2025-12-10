@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors')
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 require('dotenv').config();
+const stripe = require('stripe')(process.env.STRIPE_SECRET);
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -359,12 +360,12 @@ async function run() {
 
         app.patch('/orders/status/:orderId', async (req, res) => {
             const { orderId } = req.params;
-            const { status } = req.body; // "cancelled", "accepted", "delivered"
+            const { orderStatus } = req.body;
 
             try {
                 const result = await ordersCollection.updateOne(
                     { _id: new ObjectId(orderId) },
-                    { $set: { orderStatus: status } }
+                    { $set: { orderStatus: orderStatus } }
                 );
                 res.send({ success: true, modifiedCount: result.modifiedCount });
             } catch (error) {
@@ -372,6 +373,91 @@ async function run() {
                 res.status(500).send({ success: false, message: "Failed to update order status" });
             }
         });
+
+        app.post('/orders/payment-checkout-session', async (req, res) => {
+            const order = req.body;
+            const amount = parseInt(order.totalPrice) * 100;
+
+            const session = await stripe.checkout.sessions.create({
+                line_items: [
+                    {
+                        price_data: {
+                            currency: 'usd',
+                            unit_amount: amount,
+                            product_data: {
+                                name: `Payment for ${order.mealName}`,
+                            },
+                        },
+                        quantity: 1,
+                    },
+                ],
+                mode: 'payment',
+                customer_email: order.customerEmail,
+                metadata: {
+                    orderId: order.orderId
+                },
+                success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+                cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+            });
+
+            res.send({ url: session.url });
+        });
+
+        app.patch('/payment-success', async (req, res) => {
+            const sessionId = req.query.session_id;
+
+            try {
+                // Get session from Stripe
+                const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+                const transactionId = session.payment_intent;
+
+                // Check if payment already stored
+                const exists = await ordersCollection.findOne({ transactionId });
+                if (exists) {
+                    return res.send({
+                        success: true,
+                        message: "already exists",
+                        transactionId,
+                        trackingId: exists.trackingId
+                    });
+                }
+
+                // Create tracking ID
+                const trackingId =
+                    "MEAL-" +
+                    new Date().toISOString().slice(0, 10).replace(/-/g, "") +
+                    "-" +
+                    Math.random().toString(36).substring(2, 8).toUpperCase();
+
+                // Get order ID from Stripe metadata
+                const orderId = session.metadata.orderId;
+
+                // Update order with payment info
+                await ordersCollection.updateOne(
+                    { _id: new ObjectId(orderId) },
+                    {
+                        $set: {
+                            paymentStatus: "paid",
+                            transactionId: transactionId,
+                            trackingId: trackingId,
+                        },
+                    }
+                );
+
+                return res.send({
+                    success: true,
+                    transactionId,
+                    trackingId,
+                });
+
+            } catch (error) {
+                console.error("Payment success error:", error);
+                res.status(500).send({ success: false, error: "Payment process failed" });
+            }
+        });
+
+
 
 
         // Send a ping to confirm a successful connection
