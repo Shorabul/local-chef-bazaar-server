@@ -321,6 +321,7 @@ async function run() {
             }
         });
 
+        // Orders API (User View)
         app.get('/orders/user/:email', async (req, res) => {
             const userEmail = req.params.email;
 
@@ -332,6 +333,20 @@ async function run() {
                 res.status(500).send({ success: false, message: "Failed to fetch orders" });
             }
         });
+
+        //Order Requests API (Chef View)
+        app.get('/orders/chef/:chefId', async (req, res) => {
+            const chefId = req.params.chefId;
+
+            try {
+                const orders = await ordersCollection.find({ chefId }).toArray();
+                res.send({ success: true, data: orders });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Failed to fetch chef orders" });
+            }
+        });
+
 
         app.post('/order', async (req, res) => {
             const orderInfo = req.body;
