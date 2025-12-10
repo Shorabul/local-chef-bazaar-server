@@ -321,6 +321,18 @@ async function run() {
             }
         });
 
+        app.get('/orders/user/:email', async (req, res) => {
+            const userEmail = req.params.email;
+
+            try {
+                const orders = await ordersCollection.find({ userEmail }).toArray();
+                res.send({ success: true, data: orders });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Failed to fetch orders" });
+            }
+        });
+
         app.post('/order', async (req, res) => {
             const orderInfo = req.body;
             try {
