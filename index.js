@@ -204,7 +204,6 @@ async function run() {
             const sortBy = req.query.sortBy || "_id";
             const order = req.query.order === "desc" ? -1 : 1;
 
-            // FIXED projection
             let fields = {};
             if (req.query.fields) {
                 req.query.fields.split(",").forEach(f => {
@@ -358,7 +357,21 @@ async function run() {
             }
         });
 
+        app.patch('/orders/status/:orderId', async (req, res) => {
+            const { orderId } = req.params;
+            const { status } = req.body; // "cancelled", "accepted", "delivered"
 
+            try {
+                const result = await ordersCollection.updateOne(
+                    { _id: new ObjectId(orderId) },
+                    { $set: { orderStatus: status } }
+                );
+                res.send({ success: true, modifiedCount: result.modifiedCount });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Failed to update order status" });
+            }
+        });
 
 
         // Send a ping to confirm a successful connection
