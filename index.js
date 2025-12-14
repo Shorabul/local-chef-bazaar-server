@@ -1,15 +1,23 @@
 const express = require('express');
-const cors = require('cors')
+const cors = require('cors');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 require('dotenv').config();
 const stripe = require('stripe')(process.env.STRIPE_SECRET);
+const jwt = require("jsonwebtoken");
+const cookieParser = require("cookie-parser");
 
 const app = express();
 const port = process.env.PORT || 3000;
 
+// ------------------- Middleware -------------------
 app.use(express.json());
-app.use(cors());
+app.use(cors({
+    origin: process.env.FRONTEND_URL,
+    credentials: true,
+}));
+app.use(cookieParser());
 
+// ------------------- MongoDB Client -------------------
 const client = new MongoClient(process.env.MONGO_URI, {
     serverApi: {
         version: ServerApiVersion.v1,
@@ -17,29 +25,77 @@ const client = new MongoClient(process.env.MONGO_URI, {
         deprecationErrors: true,
     }
 });
+
+// ------------------- Main Function -------------------
 async function run() {
     try {
         await client.connect();
 
         const db = client.db('local_chef_bazaar_db');
+
+        // ------------------- Collections -------------------
         const usersCollection = db.collection('users');
         const roleRequestsCollection = db.collection('roleRequests');
         const mealsCollection = db.collection('meals');
         const ordersCollection = db.collection('orders');
+        const reviewsCollection = db.collection('reviews');
+        const favoriteCollection = db.collection('favorites');
 
-        app.get('/users', async (req, res) => {
+        const isProduction = process.env.NODE_ENV === 'production';
+
+        // ------------------- Middleware Functions -------------------
+        const verifyToken = (req, res, next) => {
+            const token = req.cookies.token;
+            if (!token) return res.status(401).send({ message: "Unauthorized" });
+
+            jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+                if (err) return res.status(401).send({ message: "Unauthorized" });
+                req.user = decoded;
+                next();
+            });
+        };
+
+        const verifyAdmin = async (req, res, next) => {
+            const email = req.user.email;
+            const user = await usersCollection.findOne({ email });
+            if (user?.role !== "admin") return res.status(403).send({ message: "Forbidden" });
+            next();
+        };
+
+        // ------------------- Auth Routes -------------------
+        app.post("/jwt", async (req, res) => {
+            const user = req.body; // { email, role }
+            const token = jwt.sign(user, process.env.JWT_SECRET, { expiresIn: "7d" });
+
+            res.cookie("token", token, {
+                httpOnly: true,
+                secure: true,
+                sameSite: "none",
+            }).send({ success: true });
+        });
+
+        app.post("/logout", (req, res) => {
+            res.clearCookie("token", {
+                httpOnly: true,
+                secure: isProduction,
+                sameSite: isProduction ? "none" : "lax",
+            }).send({ success: true });
+        });
+
+        // ------------------- User Routes -------------------
+        app.get('/users', verifyToken, verifyAdmin, async (req, res) => {
             try {
                 const result = await usersCollection.find().toArray();
-                res.send(result);
+                res.send({ success: true, data: result, total: result.length });
             } catch (error) {
                 console.error(error);
                 res.status(500).send({ error: 'Failed to fetch users' });
             }
         });
-        app.get('/users/:email', async (req, res) => {
-            const email = req.params.email;
+
+        app.get('/users/:email', verifyToken, async (req, res) => {
             try {
-                const result = await usersCollection.findOne({ email });
+                const result = await usersCollection.findOne({ email: req.params.email });
                 res.send(result);
             } catch (error) {
                 console.error(error);
@@ -48,19 +104,12 @@ async function run() {
         });
 
         app.get('/users/:email/role', async (req, res) => {
-            const email = req.params.email;
-
             try {
                 const user = await usersCollection.findOne(
-                    { email },
-                    { projection: { role: 1, _id: 0 } } // return ONLY role
+                    { email: req.params.email },
+                    { projection: { role: 1, _id: 0 } }
                 );
-
-                if (!user) {
-                    // console.error("Error fetching user role:", error);
-                    return res.status(404).send({ role: "user" });
-                }
-
+                if (!user) return res.status(404).send({ role: "user" });
                 res.send({ role: user.role || 'user' });
             } catch (error) {
                 res.status(500).send({ role: "user" });
@@ -72,25 +121,19 @@ async function run() {
             user.role = 'user';
             user.createAt = new Date();
 
-            const email = user.email;
-            const userExists = await usersCollection.findOne({ email });
-            if (userExists) {
-                return res.send({ message: 'user exists' });
-            }
+            const userExists = await usersCollection.findOne({ email: user.email });
+            if (userExists) return res.send({ message: 'user exists' });
 
             const result = await usersCollection.insertOne(user);
             res.send(result);
         });
 
         app.patch('/users/:email', async (req, res) => {
-            const email = req.params.email;
-            const { status } = req.body;
-
             try {
-                const result = await usersCollection
-                    .updateOne({ email: email },
-                        { $set: { status: status } }
-                    );
+                const result = await usersCollection.updateOne(
+                    { email: req.params.email },
+                    { $set: { status: req.body.status } }
+                );
                 res.send(result);
             } catch (error) {
                 console.error(error);
@@ -98,42 +141,28 @@ async function run() {
             }
         });
 
-
-        app.get('/role-requests', async (req, res) => {
+        // ------------------- Role Request Routes -------------------
+        app.get('/role-requests', verifyToken, verifyAdmin, async (req, res) => {
             const requests = await roleRequestsCollection.find({}).toArray();
             res.send(requests);
         });
 
-        app.post('/role-requests', async (req, res) => {
+        app.post('/role-requests', verifyToken, async (req, res) => {
             const { userName, userEmail, requestType } = req.body;
 
             try {
-                // Check if a pending request already exists
                 const exists = await roleRequestsCollection.findOne({
-                    userEmail,
-                    requestType,
-                    requestStatus: "pending"
+                    userEmail, requestType, requestStatus: "pending"
                 });
 
-                if (exists) {
-                    return res.status(400).send({
-                        success: false,
-                        message: "You already have a pending request for this role."
-                    });
-                }
+                if (exists) return res.status(400).send({
+                    success: false,
+                    message: "You already have a pending request for this role."
+                });
 
-                // Insert new role request
-                const newRequest = {
-                    userName,
-                    userEmail,
-                    requestType,
-                    requestStatus: 'pending',
-                    requestTime: new Date()
-                };
-
+                const newRequest = { userName, userEmail, requestType, requestStatus: 'pending', createdAt: new Date() };
                 const result = await roleRequestsCollection.insertOne(newRequest);
 
-                // Update user collection to track the pending request
                 await usersCollection.updateOne(
                     { email: userEmail },
                     { $set: { [`roleRequest.${requestType}`]: "pending" } }
@@ -146,104 +175,70 @@ async function run() {
             }
         });
 
-        app.patch('/role-requests/:email', async (req, res) => {
+        app.patch('/role-requests/:email', verifyToken, verifyAdmin, async (req, res) => {
+            const { requestType, action } = req.body;
             const email = req.params.email;
-            const { requestType, action } = req.body; // action = approved / rejected
 
             try {
-                // Reject request
                 if (action === "rejected") {
                     await roleRequestsCollection.updateOne(
                         { userEmail: email },
                         { $set: { requestStatus: "rejected" } }
                     );
-
                     return res.send({ success: true, message: "Request rejected" });
                 }
 
-                // Approve request
                 if (action === "approved") {
                     let updateFields = { role: requestType };
+                    if (requestType === "chef") updateFields.chefId = "chef-" + (Math.floor(1000 + Math.random() * 9000));
+                    if (requestType === "admin") updateFields.role = "admin";
 
-                    // If request is chef → generate chefId
-                    if (requestType === "chef") {
-                        const chefId = "chef-" + (Math.floor(1000 + Math.random() * 9000));
-                        updateFields.chefId = chefId;
-                    }
-
-                    // If request is admin → set role as admin
-                    if (requestType === "admin") {
-                        updateFields.role = "admin";
-                    }
-
-                    // Update user role
-                    await usersCollection.updateOne(
-                        { email },
-                        { $set: updateFields }
-                    );
-
-                    // Update request status
-                    await roleRequestsCollection.updateOne(
-                        { userEmail: email },
-                        { $set: { requestStatus: "approved" } }
-                    );
+                    await usersCollection.updateOne({ email }, { $set: updateFields });
+                    await roleRequestsCollection.updateOne({ userEmail: email }, { $set: { requestStatus: "approved" } });
 
                     return res.send({ success: true, message: "Request approved" });
                 }
-
             } catch (error) {
                 console.error(error);
                 res.status(500).send({ success: false, message: "Server error" });
             }
         });
 
+        // ------------------- Meals Routes -------------------
         app.get("/meals", async (req, res) => {
-            const page = parseInt(req.query.page) || 1;
-            const limit = parseInt(req.query.limit) || 10;
-            const skip = (page - 1) * limit;
+            try {
+                const page = parseInt(req.query.page) || 1;
+                const limit = parseInt(req.query.limit) || 10;
+                const skip = (page - 1) * limit;
+                const sortBy = req.query.sortBy || "_id";
+                const order = req.query.order === "desc" ? -1 : 1;
 
-            const sortBy = req.query.sortBy || "_id";
-            const order = req.query.order === "desc" ? -1 : 1;
+                let fields = {};
+                if (req.query.fields) req.query.fields.split(",").forEach(f => fields[f] = 1);
 
-            let fields = {};
-            if (req.query.fields) {
-                req.query.fields.split(",").forEach(f => {
-                    fields[f] = 1;
-                });
+                const filter = {};
+                if (req.query.featured === "true") filter.featured = true;
+
+                const meals = await mealsCollection
+                    .find(filter)
+                    .project(fields)
+                    .sort({ [sortBy]: order })
+                    .skip(skip)
+                    .limit(limit)
+                    .toArray();
+
+                const total = await mealsCollection.countDocuments(filter);
+
+                res.send({ total, page, limit, pages: Math.ceil(total / limit), data: meals });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Failed to fetch meals" });
             }
-
-            const filter = {};
-            if (req.query.featured === "true") {
-                filter.featured = true;
-            }
-
-            const meals = await mealsCollection
-                .find(filter)
-                .project(fields)
-                .sort({ [sortBy]: order })
-                .skip(skip)
-                .limit(limit)
-                .toArray();
-
-            const total = await mealsCollection.countDocuments(filter);
-
-            res.send({
-                total,
-                page,
-                limit,
-                pages: Math.ceil(total / limit),
-                data: meals
-            });
         });
 
-
-
-        // Get meals by chef email
         app.get('/meals/chef/:email', async (req, res) => {
-            const chefEmail = req.params.email;
-
             try {
-                const result = await mealsCollection.find({ chefEmail }).toArray();
+                const result = await mealsCollection.find({ chefEmail: req.params.email }).toArray();
                 res.send({ success: true, data: result });
             } catch (error) {
                 console.error(error);
@@ -251,33 +246,21 @@ async function run() {
             }
         });
 
-        // Get single meal by ID
         app.get("/meals/id/:id", async (req, res) => {
-            const id = req.params.id;
-
             try {
-                const result = await mealsCollection.findOne({ _id: new ObjectId(id) });
-
-                res.send({
-                    success: true,
-                    data: result
-                });
-
+                const result = await mealsCollection.findOne({ _id: new ObjectId(req.params.id) });
+                res.send({ success: true, data: result });
             } catch (error) {
                 console.error(error);
-                res.status(500).send({
-                    success: false,
-                    message: "Failed to fetch meal"
-                });
+                res.status(500).send({ success: false, message: "Failed to fetch meal" });
             }
         });
 
-
-
-        app.post('/meals', async (req, res) => {
-            const mealInfo = req.body;
+        app.post('/meals', verifyToken, async (req, res) => {
             try {
-                const result = await mealsCollection.insertOne(mealInfo);
+                const meal = req.body;
+                meal.createdAt = new Date();
+                const result = await mealsCollection.insertOne(meal);
                 res.send({ success: true, data: result });
             } catch (error) {
                 console.error(error);
@@ -286,34 +269,21 @@ async function run() {
         });
 
         app.patch("/meals/:id", async (req, res) => {
-            const id = req.params.id;
-            const updatedFields = req.body;
-
             try {
                 const result = await mealsCollection.updateOne(
-                    { _id: new ObjectId(id) },
-                    { $set: updatedFields }
+                    { _id: new ObjectId(req.params.id) },
+                    { $set: req.body }
                 );
-
-                res.send({
-                    success: true,
-                    modifiedCount: result.modifiedCount,
-                    message: "Meal updated successfully",
-                });
+                res.send({ success: true, modifiedCount: result.modifiedCount, message: "Meal updated successfully" });
             } catch (error) {
                 console.error(error);
-                res.status(500).send({
-                    success: false,
-                    message: "Failed to update meal",
-                });
+                res.status(500).send({ success: false, message: "Failed to update meal" });
             }
         });
 
-
         app.delete('/meals/:id', async (req, res) => {
-            const id = req.params.id;
             try {
-                const result = await mealsCollection.deleteOne({ _id: new ObjectId(id) });
+                const result = await mealsCollection.deleteOne({ _id: new ObjectId(req.params.id) });
                 res.send({ success: true, data: result });
             } catch (error) {
                 console.error(error);
@@ -321,12 +291,103 @@ async function run() {
             }
         });
 
-        // Orders API (User View)
-        app.get('/orders/user/:email', async (req, res) => {
-            const userEmail = req.params.email;
-
+        // ------------------- Reviews Routes -------------------
+        app.get('/reviews/:foodId', async (req, res) => {
             try {
-                const orders = await ordersCollection.find({ userEmail }).toArray();
+                const reviews = await reviewsCollection.find({ foodId: req.params.foodId }).sort({ date: -1 }).toArray();
+                res.send({ success: true, data: reviews });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Failed to fetch reviews" });
+            }
+        });
+
+        app.get('/reviews/user/:email', verifyToken, async (req, res) => {
+            try {
+                const reviews = await reviewsCollection.find({ userEmail: req.params.email }).sort({ date: -1 }).toArray();
+                res.send({ success: true, data: reviews });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Failed to fetch reviews" });
+            }
+        });
+
+        app.post('/reviews', async (req, res) => {
+            try {
+                const review = { ...req.body, createdAt: new Date() };
+                const result = await reviewsCollection.insertOne(review);
+                res.send({ success: true, data: result });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Failed to save review" });
+            }
+        });
+
+        app.patch('/reviews/:id', verifyToken, async (req, res) => {
+            try {
+                const result = await reviewsCollection.updateOne(
+                    { _id: new ObjectId(req.params.id) },
+                    { $set: req.body }
+                );
+                if (result.modifiedCount === 1) res.send({ success: true, message: "Review updated successfully" });
+                else res.status(404).send({ success: false, message: "Review not found or no changes made" });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Failed to update review" });
+            }
+        });
+
+        app.delete('/reviews/:id', verifyToken, async (req, res) => {
+            try {
+                const result = await reviewsCollection.deleteOne({ _id: new ObjectId(req.params.id) });
+                if (result.deletedCount === 1) res.send({ success: true, message: "Review deleted successfully" });
+                else res.status(404).send({ success: false, message: "Review not found" });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Failed to delete review" });
+            }
+        });
+
+        // ------------------- Favorites Routes -------------------
+        app.get('/favorites', verifyToken, async (req, res) => {
+            try {
+                const favorites = await favoriteCollection.find({ userEmail: req.query.userEmail }).toArray();
+                res.send({ success: true, data: favorites });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Failed to fetch favorites" });
+            }
+        });
+
+        app.post('/favorites', verifyToken, async (req, res) => {
+            try {
+                const favorite = req.body;
+                const exists = await favoriteCollection.findOne({ userEmail: favorite.userEmail, foodId: favorite.foodId });
+                if (exists) return res.send({ success: false, message: "Meal already in favorites" });
+
+                favorite.createAt = new Date();
+                const result = await favoriteCollection.insertOne(favorite);
+                res.send({ success: true, data: result, message: "Added to favorites" });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Failed to save favorite" });
+            }
+        });
+
+        app.delete('/favorites/:id', verifyToken, async (req, res) => {
+            try {
+                await favoriteCollection.deleteOne({ _id: new ObjectId(req.params.id) });
+                res.send({ success: true, message: 'Favorite deleted' });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Failed to delete favorite" });
+            }
+        });
+
+        // ------------------- Orders Routes -------------------
+        app.get('/orders/user/:email', async (req, res) => {
+            try {
+                const orders = await ordersCollection.find({ userEmail: req.params.email }).toArray();
                 res.send({ success: true, data: orders });
             } catch (error) {
                 console.error(error);
@@ -334,12 +395,9 @@ async function run() {
             }
         });
 
-        //Order Requests API (Chef View)
         app.get('/orders/chef/:chefId', async (req, res) => {
-            const chefId = req.params.chefId;
-
             try {
-                const orders = await ordersCollection.find({ chefId }).toArray();
+                const orders = await ordersCollection.find({ chefId: req.params.chefId }).toArray();
                 res.send({ success: true, data: orders });
             } catch (error) {
                 console.error(error);
@@ -347,11 +405,11 @@ async function run() {
             }
         });
 
-
         app.post('/order', async (req, res) => {
-            const orderInfo = req.body;
             try {
-                const result = await ordersCollection.insertOne(orderInfo);
+                const order = req.body;
+                order.createAt = new Date();
+                const result = await ordersCollection.insertOne(order);
                 res.send(result);
             } catch (error) {
                 res.status(500).send({ success: false, message: "Server error" });
@@ -359,13 +417,10 @@ async function run() {
         });
 
         app.patch('/orders/status/:orderId', async (req, res) => {
-            const { orderId } = req.params;
-            const { orderStatus } = req.body;
-
             try {
                 const result = await ordersCollection.updateOne(
-                    { _id: new ObjectId(orderId) },
-                    { $set: { orderStatus: orderStatus } }
+                    { _id: new ObjectId(req.params.orderId) },
+                    { $set: { orderStatus: req.body.orderStatus } }
                 );
                 res.send({ success: true, modifiedCount: result.modifiedCount });
             } catch (error) {
@@ -378,102 +433,71 @@ async function run() {
             const order = req.body;
             const amount = parseInt(order.totalPrice) * 100;
 
-            const session = await stripe.checkout.sessions.create({
-                line_items: [
-                    {
-                        price_data: {
-                            currency: 'usd',
-                            unit_amount: amount,
-                            product_data: {
-                                name: `Payment for ${order.mealName}`,
+            try {
+                const session = await stripe.checkout.sessions.create({
+                    line_items: [
+                        {
+                            price_data: {
+                                currency: 'usd',
+                                unit_amount: amount,
+                                product_data: { name: `Payment for ${order.mealName}` },
                             },
+                            quantity: 1,
                         },
-                        quantity: 1,
-                    },
-                ],
-                mode: 'payment',
-                customer_email: order.customerEmail,
-                metadata: {
-                    orderId: order.orderId
-                },
-                success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-                cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
-            });
+                    ],
+                    mode: 'payment',
+                    customer_email: order.customerEmail,
+                    metadata: { orderId: order.orderId },
+                    success_url: `${process.env.FRONTEND_URL}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+                    cancel_url: `${process.env.FRONTEND_URL}/dashboard/payment-cancelled`,
+                });
 
-            res.send({ url: session.url });
+                res.send({ url: session.url });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ success: false, message: "Payment session creation failed" });
+            }
         });
 
         app.patch('/payment-success', async (req, res) => {
-            const sessionId = req.query.session_id;
-
             try {
-                // Get session from Stripe
-                const session = await stripe.checkout.sessions.retrieve(sessionId);
-
+                const session = await stripe.checkout.sessions.retrieve(req.query.session_id);
                 const transactionId = session.payment_intent;
 
-                // Check if payment already stored
                 const exists = await ordersCollection.findOne({ transactionId });
-                if (exists) {
-                    return res.send({
-                        success: true,
-                        message: "already exists",
-                        transactionId,
-                        trackingId: exists.trackingId
-                    });
-                }
-
-                // Create tracking ID
-                const trackingId =
-                    "MEAL-" +
-                    new Date().toISOString().slice(0, 10).replace(/-/g, "") +
-                    "-" +
-                    Math.random().toString(36).substring(2, 8).toUpperCase();
-
-                // Get order ID from Stripe metadata
-                const orderId = session.metadata.orderId;
-
-                // Update order with payment info
-                await ordersCollection.updateOne(
-                    { _id: new ObjectId(orderId) },
-                    {
-                        $set: {
-                            paymentStatus: "paid",
-                            transactionId: transactionId,
-                            trackingId: trackingId,
-                        },
-                    }
-                );
-
-                return res.send({
+                if (exists) return res.send({
                     success: true,
+                    message: "already exists",
                     transactionId,
-                    trackingId,
+                    trackingId: exists.trackingId
                 });
 
+                const trackingId = "MEAL-" + new Date().toISOString().slice(0, 10).replace(/-/g, "") + "-" + Math.random().toString(36).substring(2, 8).toUpperCase();
+                const orderId = session.metadata.orderId;
+
+                await ordersCollection.updateOne(
+                    { _id: new ObjectId(orderId) },
+                    { $set: { paymentStatus: "paid", transactionId, trackingId } }
+                );
+
+                res.send({ success: true, transactionId, trackingId });
             } catch (error) {
                 console.error("Payment success error:", error);
                 res.status(500).send({ success: false, error: "Payment process failed" });
             }
         });
 
-
-
-
-        // Send a ping to confirm a successful connection
+        // ------------------- MongoDB Ping -------------------
         await client.db("admin").command({ ping: 1 });
         console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
-        // Ensures that the client will close when you finish/error
         // await client.close();
     }
 }
 run().catch(console.dir);
 
-app.get('/', (req, res) => {
-    res.send('Hello World!')
-});
+// ------------------- Root Route -------------------
+app.get('/', (req, res) => res.send('Hello World!'));
 
-app.listen(port, () => {
-    console.log(`Example app listening on port ${port}`)
-});
+// ------------------- Start Server -------------------
+app.listen(port, () => console.log(`Server running on port ${port}`));

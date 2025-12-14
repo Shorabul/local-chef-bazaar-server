@@ -1,5 +1,5 @@
 {
-  "name": "local-chef-bazaar-server",
+  "name": "locchef",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
@@ -12,9 +12,11 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
     "mongodb": "^7.0.0",
     "stripe": "^20.0.0"
   },
